@@ -1,4 +1,4 @@
-/* global preloadImagesTmr paper1Loaded fxhash fxrand fxpreview */
+/* global $fx preloadImagesTmr paper1Loaded fxhash fxrand fxpreview */
 
 //
 //  "33'4'
@@ -16,17 +16,29 @@
 //  https://youtube.com/revdancatt
 //
 
-const ratio = 1
+// Global values, because today I'm being an artist not an engineer!
+const ratio = 1 // canvas ratio
+const features = {} //  so we can keep track of what we're doing
+let nextFrame = null // requestAnimationFrame, and the ability to clear it
+let resizeTmr = null // a timer to make sure we don't resize too often
+let highRes = false // display high or low res
+let drawStarted = false // Flag if we have kicked off the draw loop
+let thumbnailTaken = false
+let forceDownloaded = false
+const urlSearchParams = new URLSearchParams(window.location.search)
+const urlParams = Object.fromEntries(urlSearchParams.entries())
+const prefix = '33-4'
+// dumpOutputs will be set to false unless we have ?dumpOutputs=true in the URL
+const dumpOutputs = urlParams.dumpOutputs === 'true'
+
+// Custom values go here
 const startTime = new Date().getTime() // so we can figure out how long since the scene started
 const maxTime = ((4 * 60) + 33) * 1000
-// const maxTime = ((4 * 60) + 33) * 1000
-let drawn = false
-let snapshotDrawn = false
-let highRes = false // display high or low res
-const features = {}
-let nextFrame = null
 
-window.$fxhashFeatures = {}
+window.$fxhashFeatures = {
+  Release: 'mnml Ser I',
+  Day: 'Extra'
+}
 
 //  Work out what all our features are
 const makeFeatures = () => {
@@ -140,53 +152,209 @@ const makeFeatures = () => {
 makeFeatures()
 console.table(window.$fxhashFeatures)
 
+const drawPaper = async () => {
+  // Grab all the canvas stuff
+  const canvas = document.getElementById('target')
+  const ctx = canvas.getContext('2d')
+
+  const w = canvas.width
+  const h = canvas.height
+
+  //  Set the line width
+  ctx.globalCompositeOperation = 'source-over'
+  ctx.lineWidth = w / (maxTime / 1000) / 2
+  //  Lay down the first paper texture
+  ctx.fillStyle = features.paper1Pattern
+  ctx.save()
+  ctx.translate(-w * features.paperOffset.paper1.x, -h * features.paperOffset.paper1.y)
+  ctx.fillRect(0, 0, w * 2, h * 2)
+  ctx.restore()
+
+  //  Lay down the second paper texture
+  ctx.globalCompositeOperation = 'darken'
+  ctx.fillStyle = features.paper2Pattern
+  ctx.save()
+  ctx.translate(-w * features.paperOffset.paper1.x, -h * features.paperOffset.paper1.y)
+  ctx.fillRect(0, 0, w * 2, h * 2)
+  ctx.restore()
+  ctx.globalCompositeOperation = 'source-over'
+
+  //  If we want to modify the colour, i.e. for riso pink, do that here
+  if (features.background) {
+    ctx.globalCompositeOperation = 'screen'
+    ctx.fillStyle = `hsla(${features.background}, 100%, 50%, 1)`
+    ctx.fillRect(0, 0, w, h)
+    ctx.globalCompositeOperation = 'source-over'
+  }
+}
+
+const drawCanvas = async () => {
+  drawStarted = true
+  //  Make sure there's only one nextFrame to be called
+  window.cancelAnimationFrame(nextFrame)
+
+  await drawPaper()
+
+  // Grab all the canvas stuff
+  const canvas = document.getElementById('target')
+  const ctx = canvas.getContext('2d')
+  const w = canvas.width
+  const h = canvas.height
+
+  ctx.save()
+  ctx.scale(-1, 1)
+  ctx.translate(-w, 0)
+
+  //  Set the line width
+  ctx.globalCompositeOperation = 'source-over'
+  ctx.lineWidth = w / (maxTime / 1000) / 2
+
+  //  Work out how far the whole process we are
+  const diff = new Date().getTime() - startTime
+  const percent = 1 - Math.min(diff / maxTime, 1)
+
+  if (percent > 0) {
+    //  Make the water gradent
+    ctx.globalCompositeOperation = 'multiply'
+    const grd = ctx.createLinearGradient(0, h / 3 * 2, 170, h)
+    grd.addColorStop(0, `hsla(${features.water.h}, ${features.water.s}%, ${features.water.l}%, 0.2)`)
+    grd.addColorStop(1, `hsla(${features.water.h}, ${features.water.s}%, ${features.water.l}%, 0)`)
+    ctx.fillStyle = grd
+    ctx.fillRect(0, h / 3 * 2, w * percent, h / 3)
+
+    //  Now draw the line
+    ctx.globalCompositeOperation = 'source-over'
+    ctx.strokeStyle = `rgba(0, 0, 0, ${1 - percent})`
+    ctx.beginPath()
+    ctx.moveTo(0, h / 3 * 2)
+    ctx.lineTo(w * percent, h / 3 * 2)
+    ctx.stroke()
+
+    //  Now draw the decoration
+    ctx.globalCompositeOperation = 'source-over'
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.0433)'
+    const maxSeconds = Math.floor(maxTime / 1000)
+    const second = Math.min(Math.floor(maxTime * percent / 1000), maxSeconds)
+    for (let s = 0; s <= second; s++) {
+      if (features.seconds[s]) {
+        for (const line of features.seconds[s]) {
+          ctx.beginPath()
+          ctx.moveTo(w * ((s / maxSeconds) + (0.5 / maxSeconds)), line.start * h)
+          ctx.lineTo(w * ((s / maxSeconds) + (0.5 / maxSeconds)), line.stop * h)
+          ctx.stroke()
+        }
+      }
+    }
+    ctx.restore()
+
+    // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+    //
+    // Below is code that is common to all the projects, there may be some
+    // customisation for animated work or special cases
+
+    // Try various methods to tell the parent window that we've drawn something
+    if (!thumbnailTaken) {
+      try {
+        $fx.preview()
+      } catch (e) {
+        try {
+          fxpreview()
+        } catch (e) {
+        }
+      }
+      thumbnailTaken = true
+    }
+
+    // If we are forcing download, then do that now
+    if (dumpOutputs || ('forceDownload' in urlParams && forceDownloaded === false)) {
+      forceDownloaded = 'forceDownload' in urlParams
+      await autoDownloadCanvas()
+      // Tell the parent window that we have downloaded
+      window.parent.postMessage('forceDownloaded', '*')
+    } else {
+    //  We should wait for the next animation frame here
+      nextFrame = window.requestAnimationFrame(drawCanvas)
+    }
+  //
+  // <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+  }
+}
+
+// -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+// -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+// -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+//
+// These are the common functions that are used by the canvas that we use
+// across all the projects, init sets up the resize event and kicks off the
+// layoutCanvas function.
+//
+// -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+// -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+// -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+
+//  Call this to start everything off
 const init = async () => {
-  //  I should add a timer to this, but really how often to people who aren't
-  //  the developer resize stuff all the time. Stick it in a digital frame and
-  //  have done with it!
+  // Resize the canvas when the window resizes, but only after 100ms of no resizing
   window.addEventListener('resize', async () => {
     //  If we do resize though, work out the new size...
-    await layoutCanvas()
-    //  And redraw it
-    drawCanvas()
+    clearTimeout(resizeTmr)
+    resizeTmr = setTimeout(async () => {
+      await layoutCanvas()
+    }, 100)
   })
 
   //  Now layout the canvas
   await layoutCanvas()
-  //  And draw it!!
-  drawCanvas()
 }
 
-const layoutCanvas = async () => {
-  //  Kill the next animation frame
-  window.cancelAnimationFrame(nextFrame)
+//  This is where we layout the canvas, and redraw the textures
+const layoutCanvas = async (windowObj = window, urlParamsObj = urlParams) => {
+  //  Kill the next animation frame (note, this isn't always used, only if we're animating)
+  windowObj.cancelAnimationFrame(nextFrame)
 
-  const wWidth = window.innerWidth
-  const wHeight = window.innerHeight
+  //  Get the window size, and devicePixelRatio
+  const { innerWidth: wWidth, innerHeight: wHeight, devicePixelRatio = 1 } = windowObj
+  let dpr = devicePixelRatio
   let cWidth = wWidth
   let cHeight = cWidth * ratio
+
   if (cHeight > wHeight) {
     cHeight = wHeight
     cWidth = wHeight / ratio
   }
-  const canvas = document.getElementById('target')
-  if (highRes) {
-    canvas.height = 8192
-    canvas.width = 8192 / ratio
-  } else {
-    canvas.width = Math.min((8192 / 2), cWidth * 2)
-    canvas.height = Math.min((8192 / ratio / 2), cHeight * 2)
-    //  Minimum size to be half of the high rez cersion
-    if (Math.min(canvas.width, canvas.height) < 8192 / 2) {
-      if (canvas.width < canvas.height) {
-        canvas.height = 8192 / 2
-        canvas.width = 8192 / 2 / ratio
-      } else {
-        canvas.width = 8192 / 2
-        canvas.height = 8192 / 2 / ratio
-      }
-    }
+
+  // Grab any canvas elements so we can delete them
+  const canvases = document.getElementsByTagName('canvas')
+  Array.from(canvases).forEach(canvas => canvas.remove())
+
+  // Now set the target width and height
+  let targetHeight = highRes ? 4096 : cHeight
+  let targetWidth = targetHeight / ratio
+
+  //  If the alba params are forcing the width, then use that (only relevant for Alba)
+  if (windowObj.alba?.params?.width) {
+    targetWidth = window.alba.params.width
+    targetHeight = Math.floor(targetWidth * ratio)
   }
+
+  // If *I* am forcing the width, then use that, and set the dpr to 1
+  // (as we want to render at the exact size)
+  if ('forceWidth' in urlParams) {
+    targetWidth = parseInt(urlParams.forceWidth)
+    targetHeight = Math.floor(targetWidth * ratio)
+    dpr = 1
+  }
+
+  // Update based on the dpr
+  targetWidth *= dpr
+  targetHeight *= dpr
+
+  //  Set the canvas width and height
+  const canvas = document.createElement('canvas')
+  canvas.id = 'target'
+  canvas.width = targetWidth
+  canvas.height = targetHeight
+  document.body.appendChild(canvas)
 
   canvas.style.position = 'absolute'
   canvas.style.width = `${cWidth}px`
@@ -194,186 +362,91 @@ const layoutCanvas = async () => {
   canvas.style.left = `${(wWidth - cWidth) / 2}px`
   canvas.style.top = `${(wHeight - cHeight) / 2}px`
 
-  const snapshot = document.getElementById('snapshot')
-  snapshot.width = canvas.width
-  snapshot.height = canvas.height
-  snapshot.style.position = 'absolute'
-  snapshot.style.width = `${cWidth}px`
-  snapshot.style.height = `${cHeight}px`
-  snapshot.style.left = `${(wWidth - cWidth) / 2}px`
-  snapshot.style.top = `${(wHeight - cHeight) / 2}px`
-
+  // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+  //
+  // Custom code (for defining textures and buffer canvas goes here) if needed
+  //
   //  Re-Create the paper pattern
   const paper1 = document.createElement('canvas')
-  paper1.width = canvas.width / 2
-  paper1.height = canvas.height / 2
+  paper1.width = targetWidth / 2
+  paper1.height = targetHeight / 2
   const paper1Ctx = paper1.getContext('2d')
   await paper1Ctx.drawImage(paper1Loaded, 0, 0, 1920, 1920, 0, 0, paper1.width, paper1.height)
   features.paper1Pattern = paper1Ctx.createPattern(paper1, 'repeat')
 
   const paper2 = document.createElement('canvas')
-  paper2.width = canvas.width / (22 / 7)
-  paper2.height = canvas.height / (22 / 7)
+  paper2.width = targetWidth / (22 / 7)
+  paper2.height = targetHeight / (22 / 7)
   const paper2Ctx = paper2.getContext('2d')
   await paper2Ctx.drawImage(paper1Loaded, 0, 0, 1920, 1920, 0, 0, paper2.width, paper2.height)
   features.paper2Pattern = paper2Ctx.createPattern(paper2, 'repeat')
+  //
+  // <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
+  //  And draw it!!
   drawCanvas()
 }
 
-const drawPaper = async () => {
-  const targets = ['target']
-  if (!snapshotDrawn) targets.push('snapshot')
+//  This allows us to download the canvas as a PNG
+// If we are forcing the id then we add that to the filename
+const autoDownloadCanvas = async () => {
+  const canvas = document.getElementById('target')
 
-  for (const target of targets) {
-    // Grab all the canvas stuff
-    const canvas = document.getElementById(target)
-    const ctx = canvas.getContext('2d')
-
-    const w = canvas.width
-    const h = canvas.height
-
-    //  Set the line width
-    ctx.globalCompositeOperation = 'source-over'
-    ctx.lineWidth = w / (maxTime / 1000) / 2
-    //  Lay down the first paper texture
-    ctx.fillStyle = features.paper1Pattern
-    ctx.save()
-    ctx.translate(-w * features.paperOffset.paper1.x, -h * features.paperOffset.paper1.y)
-    ctx.fillRect(0, 0, w * 2, h * 2)
-    ctx.restore()
-
-    //  Lay down the second paper texture
-    ctx.globalCompositeOperation = 'darken'
-    ctx.fillStyle = features.paper2Pattern
-    ctx.save()
-    ctx.translate(-w * features.paperOffset.paper1.x, -h * features.paperOffset.paper1.y)
-    ctx.fillRect(0, 0, w * 2, h * 2)
-    ctx.restore()
-    ctx.globalCompositeOperation = 'source-over'
-
-    //  If we want to modify the colour, i.e. for riso pink, do that here
-    if (features.background) {
-      ctx.globalCompositeOperation = 'screen'
-      ctx.fillStyle = `hsla(${features.background}, 100%, 50%, 1)`
-      ctx.fillRect(0, 0, w, h)
-      ctx.globalCompositeOperation = 'source-over'
-    }
-  }
-
-}
-
-const drawCanvas = async () => {
-  //  Let the preloader know that we've hit this function at least once
-  drawn = true
-  //  Make sure there's only one nextFrame to be called
-  window.cancelAnimationFrame(nextFrame)
-
-  const targets = ['target']
-  if (!snapshotDrawn) targets.push('snapshot')
-
-  await drawPaper()
-
-  for (const target of targets) {
-    // Grab all the canvas stuff
-    const canvas = document.getElementById(target)
-    const ctx = canvas.getContext('2d')
-    const w = canvas.width
-    const h = canvas.height
-
-    ctx.save()
-    ctx.scale(-1, 1)
-    ctx.translate(-w, 0)
-
-    //  Set the line width
-    ctx.globalCompositeOperation = 'source-over'
-    ctx.lineWidth = w / (maxTime / 1000) / 2
-
-    //  Work out how far the whole process we are
-    const diff = new Date().getTime() - startTime
-    let percent = 1 - Math.min(diff / maxTime, 1)
-    if (target === 'snapshot') percent = 1
-
-    if (percent > 0) {
-      //  Make the water gradent
-      ctx.globalCompositeOperation = 'multiply'
-      const grd = ctx.createLinearGradient(0, h / 3 * 2, 170, h)
-      grd.addColorStop(0, `hsla(${features.water.h}, ${features.water.s}%, ${features.water.l}%, 0.2)`)
-      grd.addColorStop(1, `hsla(${features.water.h}, ${features.water.s}%, ${features.water.l}%, 0)`)
-      ctx.fillStyle = grd
-      ctx.fillRect(0, h / 3 * 2, w * percent, h / 3)
-
-      //  Now draw the line
-      ctx.globalCompositeOperation = 'source-over'
-      ctx.strokeStyle = `rgba(0, 0, 0, ${1 - percent})`
-      ctx.beginPath()
-      ctx.moveTo(0, h / 3 * 2)
-      ctx.lineTo(w * percent, h / 3 * 2)
-      ctx.stroke()
-
-      //  Now draw the decoration
-      ctx.globalCompositeOperation = 'source-over'
-      ctx.strokeStyle = 'rgba(0, 0, 0, 0.0433)'
-      const maxSeconds = Math.floor(maxTime / 1000)
-      const second = Math.min(Math.floor(maxTime * percent / 1000), maxSeconds)
-      for (let s = 0; s <= second; s++) {
-        if (features.seconds[s]) {
-          for (const line of features.seconds[s]) {
-            ctx.beginPath()
-            ctx.moveTo(w * ((s / maxSeconds) + (0.5 / maxSeconds)), line.start * h)
-            ctx.lineTo(w * ((s / maxSeconds) + (0.5 / maxSeconds)), line.stop * h)
-            ctx.stroke()
-          }
-        }
-      }
-      ctx.restore()
-    }
-
-    if (!snapshotDrawn) {
-      snapshotDrawn = true
-      try {
-        fxpreview()
-      } catch (er) {
-        console.log('No capture')
-      }
-    }
-
-    //  Now do it all over again
-    nextFrame = window.requestAnimationFrame(drawCanvas)
-  }
-}
-
-const autoDownloadCanvas = async (showHash = false) => {
+  // Create a download link
   const element = document.createElement('a')
-  element.setAttribute('download', `4-33_${fxhash}`)
+  const filename = 'forceId' in urlParams
+    ? `${prefix}_${urlParams.forceId.toString().padStart(4, '0')}_${fxhash}`
+    : `${prefix}_${fxhash}`
+  element.setAttribute('download', filename)
+
+  // Hide the link element
   element.style.display = 'none'
   document.body.appendChild(element)
-  let imageBlob = null
-  imageBlob = await new Promise(resolve => document.getElementById('target').toBlob(resolve, 'image/png'))
-  element.setAttribute('href', window.URL.createObjectURL(imageBlob, {
-    type: 'image/png'
-  }))
+
+  // Convert canvas to Blob and set it as the link's href
+  const imageBlob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'))
+  element.setAttribute('href', window.URL.createObjectURL(imageBlob))
+
+  // Trigger the download
   element.click()
+
+  // Clean up by removing the link element
   document.body.removeChild(element)
+
+  // Reload the page if dumpOutputs is true
+  if (dumpOutputs) {
+    window.location.reload()
+  }
 }
 
 //  KEY PRESSED OF DOOM
 document.addEventListener('keypress', async (e) => {
   e = e || window.event
+  // == Common controls ==
   // Save
   if (e.key === 's') autoDownloadCanvas()
 
   //   Toggle highres mode
   if (e.key === 'h') {
     highRes = !highRes
+    console.log('Highres mode is now', highRes)
     await layoutCanvas()
   }
+
+  // Custom controls
 })
+
 //  This preloads the images so we can get access to them
 // eslint-disable-next-line no-unused-vars
 const preloadImages = () => {
   //  If paper1 has loaded and we haven't draw anything yet, then kick it all off
-  if (paper1Loaded !== null && !drawn) {
+  if (paper1Loaded !== null && !drawStarted) {
+    clearInterval(preloadImagesTmr)
+    init()
+  }
+  //  If, for some reason things haven't fired after 3.333 seconds, then just draw the stuff anyway
+  //  without the textures
+  if (new Date().getTime() - startTime > 3333 && !drawStarted) {
     clearInterval(preloadImagesTmr)
     init()
   }
